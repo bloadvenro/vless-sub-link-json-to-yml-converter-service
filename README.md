@@ -2,7 +2,7 @@
 
 `happ2mihomo` is a local, Dockerized adapter that fetches a Happ JSON subscription and exposes a strict Mihomo YAML subscription for Clash Verge Rev.
 
-The service listens only through the Compose loopback binding at `http://127.0.0.1:17890`. It supports VLESS TCP+Reality, VLESS TCP+TLS, VLESS WS+TLS, and Happ Hysteria version 2 profiles. Recognized multi-outbound Happ aggregate profiles are excluded from the generated proxy list.
+The service listens only through a Compose loopback binding. The default URL is `http://127.0.0.1:17890`, and the host port can be changed with `HOST_PORT` in `.env`. It supports VLESS TCP+Reality, VLESS TCP+TLS, VLESS WS+TLS, and Happ Hysteria version 2 profiles. Recognized multi-outbound Happ aggregate profiles are excluded from the generated proxy list.
 
 ## Run with Docker Compose
 
@@ -12,30 +12,38 @@ Requirements: Docker Engine with Compose v2 on Linux, or Docker Desktop on macOS
 (umask 077; cp .env.example .env)
 ```
 
-Edit `.env` and replace the placeholder with the HTTPS subscription URL. The optional user agent defaults to `Happ/4.3.0/Android`. If `.env` already exists, run `chmod 600 .env` before editing it.
+Edit `.env` and replace the placeholder with the HTTPS subscription URL. The optional user agent defaults to `Happ/4.3.0/Android`. `HOST_PORT` is the port exposed on macOS or Linux and defaults to `17890`. If `.env` already exists, run `chmod 600 .env` before editing it.
 
 ```sh
 docker compose up -d --build
 docker compose ps
 ```
 
-Use this remote profile URL in Clash Verge Rev:
+With the default `HOST_PORT=17890`, use this remote profile URL in Clash Verge Rev:
 
 ```text
 http://127.0.0.1:17890/sub
 ```
 
-The local health endpoint is `http://127.0.0.1:17890/healthz`.
+If you select another `HOST_PORT`, replace `17890` in that URL with your value. The local health endpoint follows the same rule; by default it is `http://127.0.0.1:17890/healthz`.
 
 ## Docker Desktop one-time registration
 
 Docker Desktop cannot create a local Compose application from `compose.yaml` with only a GUI click. Register and build the stable `happ2mihomo` Compose application once from a terminal:
 
+The port is set before registration in `.env`:
+
+```dotenv
+HOST_PORT=17890
+```
+
+Compose uses this value in the mapping `127.0.0.1:${HOST_PORT}:17890`: the first port is the port available on macOS, while the final `17890` is the fixed port inside the container. For example, `HOST_PORT=18080` makes the subscription URL `http://127.0.0.1:18080/sub`. The binding remains local to the computer.
+
 ```sh
 docker compose create --build
 ```
 
-It then appears under **Containers** as `happ2mihomo`. Docker Desktop's Play button starts the already-created application after that initial registration.
+The command reads `.env`, creates the port mapping, and registers the application. It then appears under **Containers** as `happ2mihomo`. Docker Desktop's Play button starts the already-created application after that initial registration.
 
 After changing `.env`, updating source, or pulling a new version, rebuild and recreate the container:
 
