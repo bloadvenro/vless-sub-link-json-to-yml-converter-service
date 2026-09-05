@@ -163,29 +163,47 @@ export const hysteria = (remarks = "Hysteria node"): Record<string, unknown> => 
   ],
 });
 
-export const aggregate = (): Record<string, unknown> => ({
-  remarks: "Ignored aggregate",
-  dns: { any: "shape" },
-  inbounds: "unconsumed",
-  meta: ["unconsumed"],
-  observatory: { any: "shape" },
-  routing: { balancers: [{}], other: "unconsumed" },
-  outbounds: [
-    {
-      protocol: "vless",
-      tag: "one",
-      settings: "unconsumed",
-      streamSettings: null,
+export const aggregate = (): Record<string, unknown> => {
+  const first = structuredClone(
+    (vlessTcpTls().outbounds as Array<Record<string, unknown>>)[0],
+  ) as Record<string, unknown>;
+  first.tag = "proxy-one";
+  const second = structuredClone(
+    (vlessWsTls().outbounds as Array<Record<string, unknown>>)[0],
+  ) as Record<string, unknown>;
+  second.tag = "proxy-two";
+  const third = structuredClone(
+    (vlessReality().outbounds as Array<Record<string, unknown>>)[0],
+  ) as Record<string, unknown>;
+  third.tag = "proxy-three";
+  return {
+    remarks: "Ignored aggregate",
+    dns: { any: "unconsumed" },
+    inbounds: "unconsumed",
+    meta: ["unconsumed"],
+    observatory: {
+      subjectSelector: ["proxy-"],
+      probeInterval: "30s",
     },
-    {
-      protocol: "hysteria",
-      tag: "two",
-      settings: null,
-      streamSettings: "unconsumed",
+    routing: {
+      balancers: [
+        {
+          selector: ["proxy-"],
+          strategy: { type: "leastPing" },
+          tag: "automatic",
+        },
+      ],
+      rules: [{ balancerTag: "automatic", type: "field" }],
+      other: "unconsumed",
     },
-    { protocol: "loopback", completely: "unconsumed" },
-  ],
-});
+    outbounds: [
+      first,
+      second,
+      third,
+      { protocol: "loopback", completely: "unconsumed", tag: "loop" },
+    ],
+  };
+};
 
 export const malformedUtf8Subscription = (): Uint8Array => {
   const marker = "Malformed UTF-8";

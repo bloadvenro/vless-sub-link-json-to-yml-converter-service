@@ -3,12 +3,13 @@ import { validateHeaderValue } from "node:http";
 export const DEFAULT_USER_AGENT = "Happ/4.3.0/Android";
 
 export interface RuntimeConfig {
+  readonly listenPort: number;
   readonly subscriptionUrl: URL;
   readonly userAgent: string;
 }
 
 export class ConfigError extends Error {
-  constructor(readonly key: "SUBSCRIPTION_URL" | "HAPP_USER_AGENT") {
+  constructor(readonly key: "SUBSCRIPTION_URL" | "HAPP_USER_AGENT" | "PORT") {
     super(`Invalid configuration: ${key}`);
     this.name = "ConfigError";
   }
@@ -67,7 +68,16 @@ export const readConfig = (
     throw new ConfigError("HAPP_USER_AGENT");
   }
 
-  return { subscriptionUrl, userAgent };
+  const rawPort = environment.PORT ?? "17890";
+  if (!/^\d+$/u.test(rawPort)) {
+    throw new ConfigError("PORT");
+  }
+  const listenPort = Number(rawPort);
+  if (!Number.isSafeInteger(listenPort) || listenPort > 65_535) {
+    throw new ConfigError("PORT");
+  }
+
+  return { listenPort, subscriptionUrl, userAgent };
 };
 
 export const validateRedirectUrl = (location: string, base: URL): URL => {

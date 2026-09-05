@@ -9,6 +9,53 @@ test("configuration trims outer ASCII whitespace and supplies the default UA", (
   });
   assert.equal(config.subscriptionUrl.href, "https://example.test/sub?q=token");
   assert.equal(config.userAgent, DEFAULT_USER_AGENT);
+  assert.equal(config.listenPort, 17_890);
+});
+
+test("configuration accepts exact decimal ports including ephemeral zero", () => {
+  for (const [raw, expected] of [
+    ["0", 0],
+    ["00080", 80],
+    ["17890", 17_890],
+    ["65535", 65_535],
+  ] as const) {
+    assert.equal(
+      readConfig({
+        SUBSCRIPTION_URL: "https://example.test/sub",
+        PORT: raw,
+      }).listenPort,
+      expected,
+    );
+  }
+});
+
+test("configuration rejects non-exact or out-of-range ports with a key-only error", () => {
+  for (const value of [
+    "",
+    " ",
+    " 80",
+    "80 ",
+    "+80",
+    "-1",
+    "1.5",
+    "80tcp",
+    "65536",
+    "999999999999999999999",
+  ]) {
+    assert.throws(
+      () =>
+        readConfig({
+          SUBSCRIPTION_URL: "https://example.test/sub",
+          PORT: value,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof ConfigError);
+        assert.equal(error.key, "PORT");
+        assert.equal(error.message, "Invalid configuration: PORT");
+        return true;
+      },
+    );
+  }
 });
 
 test("configuration trims a custom UA without changing internal spaces", () => {

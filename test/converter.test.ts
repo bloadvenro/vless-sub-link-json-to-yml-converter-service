@@ -101,6 +101,43 @@ test("converts WS TLS VLESS while preserving semantic strings", () => {
   ]);
 });
 
+test("accepts the 360 client fingerprint for every supported VLESS transport", () => {
+  for (const fixture of [vlessReality, vlessTcpTls, vlessWsTls]) {
+    const profile = fixture();
+    const stream = streamSettings(profile);
+    const security = stream.security;
+    const tls = (security === "reality"
+      ? stream.realitySettings
+      : stream.tlsSettings) as Record<string, unknown>;
+    tls.fingerprint = "360";
+    assert.equal(
+      convertHappJson([profile]).proxies[0]?.["client-fingerprint"],
+      "360",
+    );
+  }
+
+  const unsupportedHysteriaFingerprint = hysteria();
+  const tls = streamSettings(unsupportedHysteriaFingerprint)
+    .tlsSettings as Record<string, unknown>;
+  tls.fingerprint = "360";
+  assert.throws(
+    () => convertHappJson([unsupportedHysteriaFingerprint]),
+    ConversionError,
+  );
+});
+
+test("keeps VLESS client fingerprints as a closed set", () => {
+  for (const fixture of [vlessReality, vlessTcpTls, vlessWsTls]) {
+    const profile = fixture();
+    const stream = streamSettings(profile);
+    const tls = (stream.security === "reality"
+      ? stream.realitySettings
+      : stream.tlsSettings) as Record<string, unknown>;
+    tls.fingerprint = "unsupported-browser";
+    assert.throws(() => convertHappJson([profile]), ConversionError);
+  }
+});
+
 test("converts Hysteria 2 and deliberately omits the client fingerprint", () => {
   const proxy = convertHappJson([hysteria()]).proxies[0];
   assert.deepEqual(proxy, {
@@ -125,12 +162,375 @@ test("ignores recognized aggregates and their nested client sections", () => {
   assert.deepEqual(config["proxy-groups"][0]?.proxies, ["Standalone"]);
 });
 
-test("rejects malformed aggregate markers and unsupported shapes", () => {
-  const noBalancer = aggregate();
-  (noBalancer.routing as Record<string, unknown>).balancers = [];
+test("accepts burst observation and observation-free random strategies", () => {
+  const burst = aggregate();
+  burst.burstObservatory = {
+    ...(burst.observatory as Record<string, unknown>),
+    pingConfig: {},
+  };
+  delete burst.observatory;
+  const burstBalancer = ((burst.routing as Record<string, unknown>)
+    .balancers as Array<Record<string, unknown>>)[0];
+  assert.ok(burstBalancer !== undefined);
+  burstBalancer.strategy = { type: "leastLoad", settings: {} };
+
+  const implicitRandom = aggregate();
+  delete implicitRandom.observatory;
+  const implicitBalancer = ((implicitRandom.routing as Record<string, unknown>)
+    .balancers as Array<Record<string, unknown>>)[0];
+  assert.ok(implicitBalancer !== undefined);
+  delete implicitBalancer.strategy;
+
+  const roundRobin = aggregate();
+  delete roundRobin.observatory;
+  const roundRobinBalancer = ((roundRobin.routing as Record<string, unknown>)
+    .balancers as Array<Record<string, unknown>>)[0];
+  assert.ok(roundRobinBalancer !== undefined);
+  roundRobinBalancer.strategy = { type: "roundRobin" };
+
+  const partialObservation = aggregate();
+  (partialObservation.observatory as Record<string, unknown>).subjectSelector = [
+    "proxy-one",
+  ];
+
+  const duplicateSelectors = aggregate();
+  const duplicateSelectorBalancer = ((duplicateSelectors.routing as Record<
+    string,
+    unknown
+  >).balancers as Array<Record<string, unknown>>)[0];
+  assert.ok(duplicateSelectorBalancer !== undefined);
+  duplicateSelectorBalancer.selector = ["proxy-", "proxy-"];
+
+  const leastLoadDefaults = aggregate();
+  const leastLoadBalancer = ((leastLoadDefaults.routing as Record<string, unknown>)
+    .balancers as Array<Record<string, unknown>>)[0];
+  assert.ok(leastLoadBalancer !== undefined);
+  leastLoadBalancer.strategy = { type: "leastLoad" };
+
+  const outboundPrecedence = aggregate();
+  (outboundPrecedence.routing as Record<string, unknown>).rules = [
+    { balancerTag: "unknown", outboundTag: "provider-only-outbound" },
+    { balancerTag: "automatic" },
+  ];
+
+  for (const recognized of [
+    burst,
+    implicitRandom,
+    roundRobin,
+    partialObservation,
+    duplicateSelectors,
+    leastLoadDefaults,
+    outboundPrecedence,
+  ]) {
+    assert.doesNotThrow(() =>
+      convertHappJson([recognized, vlessTcpTls("Standalone")]),
+    );
+  }
+});
+
+test("accepts two fully referenced balancers whose union covers all proxies", () => {
+  const profile = aggregate();
+  const routing = profile.routing as Record<string, unknown>;
+  routing.balancers = [
+    { selector: ["proxy-one", "proxy-two"], tag: "first" },
+    {
+      selector: ["proxy-two", "proxy-three"],
+      strategy: { type: "leastLoad", settings: {} },
+      tag: "second",
+    },
+  ];
+  routing.rules = [{ balancerTag: "first" }, { balancerTag: "second" }];
+  assert.doesNotThrow(() =>
+    convertHappJson([profile, vlessTcpTls("Standalone")]),
+  );
+});
+
+test("requires complete aggregate balancer coverage and valid routing references", () => {
+  const mutations: Array<(profile: Record<string, unknown>) => void> = [
+    (profile) => {
+      (profile.routing as Record<string, unknown>).balancers = [];
+    },
+    (profile) => {
+      const balancer = ((profile.routing as Record<string, unknown>)
+        .balancers as Array<Record<string, unknown>>)[0];
+      assert.ok(balancer !== undefined);
+      balancer.selector = [];
+    },
+    (profile) => {
+      const balancer = ((profile.routing as Record<string, unknown>)
+        .balancers as Array<Record<string, unknown>>)[0];
+      assert.ok(balancer !== undefined);
+      balancer.selector = ["proxy-one"];
+    },
+    (profile) => {
+      const routing = profile.routing as Record<string, unknown>;
+      routing.balancers = [
+        { selector: ["proxy-one", "proxy-two"], tag: "partial" },
+      ];
+      routing.rules = [{ balancerTag: "partial" }];
+    },
+    (profile) => {
+      (profile.routing as Record<string, unknown>).rules = [];
+    },
+    (profile) => {
+      (profile.routing as Record<string, unknown>).rules = [
+        { balancerTag: "unknown" },
+      ];
+    },
+    (profile) => {
+      (profile.routing as Record<string, unknown>).rules = [
+        { outboundTag: null },
+        { balancerTag: "automatic" },
+      ];
+    },
+    (profile) => {
+      (profile.routing as Record<string, unknown>).rules = [
+        { outboundTag: "" },
+        { balancerTag: "automatic" },
+      ];
+    },
+    (profile) => {
+      (profile.routing as Record<string, unknown>).rules = [
+        { type: "field" },
+        { balancerTag: "automatic" },
+      ];
+    },
+    (profile) => {
+      (profile.routing as Record<string, unknown>).rules = [
+        { balancerTag: "automatic", outboundTag: "proxy-one" },
+      ];
+    },
+    (profile) => {
+      const routing = profile.routing as Record<string, unknown>;
+      const original = (routing.balancers as unknown[])[0];
+      routing.balancers = [original, clone(original)];
+      routing.rules = [{ balancerTag: "automatic" }];
+    },
+    (profile) => {
+      const routing = profile.routing as Record<string, unknown>;
+      const second = clone(
+        (routing.balancers as Array<Record<string, unknown>>)[0],
+      );
+      assert.ok(second !== undefined);
+      second.tag = "secondary";
+      routing.balancers = [
+        (routing.balancers as unknown[])[0],
+        second,
+      ];
+      routing.rules = [{ balancerTag: "automatic" }];
+    },
+    (profile) => {
+      const balancer = ((profile.routing as Record<string, unknown>)
+        .balancers as Array<Record<string, unknown>>)[0];
+      assert.ok(balancer !== undefined);
+      balancer.selector = ["proxy-", "missing"];
+    },
+  ];
+
+  for (const mutate of mutations) {
+    const malformed = aggregate();
+    mutate(malformed);
+    assert.throws(
+      () => convertHappJson([malformed, vlessTcpTls("Standalone")]),
+      ConversionError,
+    );
+  }
+});
+
+test("validates aggregate proxy tags, fallback references, and proxy payloads", () => {
+  const validFallbacks = ["proxy-one", "loop"];
+  for (const fallbackTag of validFallbacks) {
+    const profile = aggregate();
+    const balancer = ((profile.routing as Record<string, unknown>)
+      .balancers as Array<Record<string, unknown>>)[0];
+    assert.ok(balancer !== undefined);
+    balancer.fallbackTag = fallbackTag;
+    assert.doesNotThrow(() =>
+      convertHappJson([profile, vlessTcpTls("Standalone")]),
+    );
+  }
+
+  const mutations: Array<(profile: Record<string, unknown>) => void> = [
+    (profile) => {
+      const outbounds = profile.outbounds as Array<Record<string, unknown>>;
+      assert.ok(outbounds[1] !== undefined);
+      outbounds[1].tag = "proxy-one";
+    },
+    (profile) => {
+      const outbounds = profile.outbounds as Array<Record<string, unknown>>;
+      assert.ok(outbounds[1] !== undefined);
+      outbounds[1].tag = "";
+    },
+    (profile) => {
+      const outbounds = profile.outbounds as Array<Record<string, unknown>>;
+      const settings = outbounds[0]?.settings as Record<string, unknown>;
+      settings.unknown = true;
+    },
+    (profile) => {
+      const outbounds = profile.outbounds as Array<Record<string, unknown>>;
+      assert.ok(outbounds[0] !== undefined);
+      outbounds[0].protocol = "trojan";
+    },
+    (profile) => {
+      const balancer = ((profile.routing as Record<string, unknown>)
+        .balancers as Array<Record<string, unknown>>)[0];
+      assert.ok(balancer !== undefined);
+      balancer.fallbackTag = "missing";
+    },
+    (profile) => {
+      const outbounds = profile.outbounds as Array<Record<string, unknown>>;
+      outbounds.push({ protocol: "blackhole", tag: "loop" });
+    },
+    (profile) => {
+      const outbounds = profile.outbounds as Array<Record<string, unknown>>;
+      const auxiliary = outbounds.at(-1);
+      assert.ok(auxiliary !== undefined);
+      auxiliary.tag = "proxy-one";
+    },
+  ];
+
+  for (const mutate of mutations) {
+    const malformed = aggregate();
+    mutate(malformed);
+    assert.throws(
+      () => convertHappJson([malformed, vlessTcpTls("Standalone")]),
+      ConversionError,
+    );
+  }
+});
+
+test("enforces aggregate strategy and observatory compatibility", () => {
+  const mutations: Array<(profile: Record<string, unknown>) => void> = [
+    (profile) => {
+      delete profile.observatory;
+    },
+    (profile) => {
+      profile.burstObservatory = clone(profile.observatory);
+    },
+    (profile) => {
+      profile.burstObservatory = {
+        ...(profile.observatory as Record<string, unknown>),
+      };
+      delete profile.observatory;
+    },
+    (profile) => {
+      profile.burstObservatory = {
+        ...(profile.observatory as Record<string, unknown>),
+        pingConfig: [],
+      };
+      delete profile.observatory;
+    },
+    (profile) => {
+      (profile.observatory as Record<string, unknown>).subjectSelector = [
+        "missing",
+      ];
+    },
+    (profile) => {
+      const balancer = ((profile.routing as Record<string, unknown>)
+        .balancers as Array<Record<string, unknown>>)[0];
+      assert.ok(balancer !== undefined);
+      balancer.strategy = { type: "unsupported" };
+    },
+    (profile) => {
+      const balancer = ((profile.routing as Record<string, unknown>)
+        .balancers as Array<Record<string, unknown>>)[0];
+      assert.ok(balancer !== undefined);
+      balancer.strategy = { type: "leastPing", settings: {} };
+    },
+    (profile) => {
+      const balancer = ((profile.routing as Record<string, unknown>)
+        .balancers as Array<Record<string, unknown>>)[0];
+      assert.ok(balancer !== undefined);
+      balancer.strategy = { type: "random", settings: {} };
+    },
+    (profile) => {
+      const balancer = ((profile.routing as Record<string, unknown>)
+        .balancers as Array<Record<string, unknown>>)[0];
+      assert.ok(balancer !== undefined);
+      balancer.strategy = { type: "roundRobin", settings: {} };
+    },
+    (profile) => {
+      const balancer = ((profile.routing as Record<string, unknown>)
+        .balancers as Array<Record<string, unknown>>)[0];
+      assert.ok(balancer !== undefined);
+      balancer.strategy = { type: "leastLoad", settings: [] };
+    },
+  ];
+
+  for (const mutate of mutations) {
+    const malformed = aggregate();
+    mutate(malformed);
+    assert.throws(
+      () => convertHappJson([malformed, vlessTcpTls("Standalone")]),
+      ConversionError,
+    );
+  }
+});
+
+test("bounds request-wide aggregate tag-prefix comparisons at 100,000", () => {
+  const makeAggregate = (
+    label: string,
+    overHalfLimit: boolean,
+  ): Record<string, unknown> => {
+    const profile = aggregate();
+    profile.remarks = `Bounded ${label}`;
+    delete profile.observatory;
+    const template = (profile.outbounds as Array<Record<string, unknown>>)[0];
+    assert.ok(template !== undefined);
+    const proxyOutbounds = Array.from({ length: 100 }, (_, index) => {
+      const outbound = clone(template);
+      outbound.tag = `${label}-node-${index}-${"x".repeat(8)}`;
+      return outbound;
+    });
+    const prefixes = proxyOutbounds.flatMap((outbound) => {
+      const tag = outbound.tag as string;
+      const baseLength = tag.indexOf("x");
+      return Array.from({ length: 5 }, (_, index) =>
+        tag.slice(0, baseLength + index + 1),
+      );
+    });
+    if (overHalfLimit) {
+      const firstTag = proxyOutbounds[0]?.tag as string;
+      prefixes.push(firstTag.slice(0, firstTag.indexOf("x") + 6));
+    }
+    profile.outbounds = [
+      ...proxyOutbounds,
+      { protocol: "loopback", tag: "loop" },
+    ];
+    profile.routing = {
+      balancers: [{ selector: prefixes, tag: "bounded" }],
+      rules: [{ balancerTag: "bounded" }],
+    };
+    return profile;
+  };
+
+  assert.doesNotThrow(() =>
+    convertHappJson([
+      makeAggregate("first", false),
+      makeAggregate("second", false),
+      vlessTcpTls("Standalone"),
+    ]),
+  );
+  assert.throws(
+    () =>
+      convertHappJson([
+        makeAggregate("first", false),
+        makeAggregate("second", true),
+        vlessTcpTls("Standalone"),
+      ]),
+    ConversionError,
+  );
+});
+
+test("keeps whole-feed fail-closed semantics for malformed aggregates", () => {
   const unsupported = vlessTcpTls();
   firstOutbound(unsupported).protocol = "trojan";
-  for (const value of [[], [noBalancer], [unsupported], [{ remarks: "none", outbounds: [] }]]) {
+  for (const value of [
+    [],
+    [aggregate()],
+    [unsupported],
+    [vlessTcpTls("Standalone"), { remarks: "none", outbounds: [] }],
+  ]) {
     assert.throws(() => convertHappJson(value), ConversionError);
   }
 });

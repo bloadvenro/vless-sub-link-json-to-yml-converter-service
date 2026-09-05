@@ -9,6 +9,7 @@ services:
     environment:
       SUBSCRIPTION_URL: ${SUBSCRIPTION_URL:?Set SUBSCRIPTION_URL in .env}
       HAPP_USER_AGENT: ${HAPP_USER_AGENT:-Happ/4.3.0/Android}
+      PORT: "17890"
     ports:
       - "127.0.0.1:${HOST_PORT:-17890}:17890"
     init: true

@@ -10,6 +10,7 @@ import type { UpstreamResult } from "../src/upstream.js";
 import { malformedUtf8Subscription, vlessTcpTls } from "./fixtures.js";
 
 const config: RuntimeConfig = {
+  listenPort: 0,
   subscriptionUrl: new URL("https://provider.example.test/synthetic"),
   userAgent: "Synthetic-UA",
 };

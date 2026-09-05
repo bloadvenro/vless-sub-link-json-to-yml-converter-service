@@ -34,11 +34,13 @@ const FINGERPRINTS = new Set([
   "safari",
   "edge",
   "android",
+  "360",
   "random",
   "randomized",
 ]);
 const HYSTERIA_FINGERPRINTS = new Set(["firefox", "randomized"]);
 const BBR_PROFILES = new Set(["standard", "conservative", "aggressive"]);
+const MAX_AGGREGATE_MATCH_CHECKS = 100_000;
 const RESERVED_PROXY_NAMES = new Set([
   "Proxy",
   "DIRECT",
@@ -68,63 +70,6 @@ const proxyShell = (value: JsonObject): JsonObject => {
   string(result.protocol);
   identityString(result.tag, 256);
   return result;
-};
-
-const isIgnoredAggregate = (
-  profile: JsonObject,
-  proxies: readonly JsonObject[],
-): boolean => {
-  if (
-    proxies.length <= 1 ||
-    proxies.some((proxy) => !SUPPORTED_PROTOCOLS.has(string(proxy.protocol)))
-  ) {
-    return false;
-  }
-
-  const observatory = profile.observatory;
-  const routing = profile.routing;
-  if (
-    typeof observatory !== "object" ||
-    observatory === null ||
-    Array.isArray(observatory) ||
-    typeof routing !== "object" ||
-    routing === null ||
-    Array.isArray(routing)
-  ) {
-    return false;
-  }
-  return Array.isArray((routing as JsonObject).balancers) &&
-    ((routing as JsonObject).balancers as unknown[]).length > 0;
-};
-
-const classifyProfile = (value: unknown): ClassifiedProfile | undefined => {
-  const profile = object(value);
-  if (!Object.hasOwn(profile, "remarks") || !Object.hasOwn(profile, "outbounds")) {
-    return fail();
-  }
-  const baseName = remarks(profile.remarks);
-  const outbounds = array(profile.outbounds);
-  const proxies: JsonObject[] = [];
-
-  for (const rawOutbound of outbounds) {
-    const outbound = object(rawOutbound);
-    const protocol = string(outbound.protocol);
-    if (!AUXILIARY_PROTOCOLS.has(protocol)) {
-      proxies.push(proxyShell(outbound));
-    }
-  }
-
-  if (proxies.length === 1) {
-    const outbound = proxies[0] ?? fail();
-    if (!SUPPORTED_PROTOCOLS.has(string(outbound.protocol))) {
-      return fail();
-    }
-    return { baseName, outbound };
-  }
-  if (isIgnoredAggregate(profile, proxies)) {
-    return undefined;
-  }
-  return fail();
 };
 
 const parseAlpn = (value: unknown): string[] => {
@@ -384,6 +329,227 @@ const convertHysteria = (outbound: JsonObject): Omit<MihomoProxy, "name"> => {
   };
 };
 
+const validateConvertibleProxy = (outbound: JsonObject): void => {
+  const protocol = string(outbound.protocol);
+  if (protocol === "vless") {
+    convertVless(outbound);
+    return;
+  }
+  if (protocol === "hysteria") {
+    convertHysteria(outbound);
+    return;
+  }
+  return fail();
+};
+
+const selectors = (value: unknown): string[] => {
+  const result = array(value).map((item) => identityString(item, 256));
+  if (result.length === 0) return fail();
+  return result;
+};
+
+interface AggregateMatchBudget {
+  used: number;
+}
+
+interface AggregateBalancer {
+  readonly observational: boolean;
+  readonly prefixes: readonly string[];
+  readonly tag: string;
+}
+
+const parseAggregateBalancer = (
+  value: unknown,
+  knownOutboundTags: ReadonlySet<string>,
+): AggregateBalancer => {
+  const balancer = exactObject(value, ["selector", "tag"], ["fallbackTag", "strategy"]);
+  const tag = identityString(balancer.tag, 256);
+  const prefixes = selectors(balancer.selector);
+
+  if (Object.hasOwn(balancer, "fallbackTag")) {
+    const fallbackTag = identityString(balancer.fallbackTag, 256);
+    if (!knownOutboundTags.has(fallbackTag)) return fail();
+  }
+
+  let strategyType = "random";
+  if (Object.hasOwn(balancer, "strategy")) {
+    const strategy = exactObject(balancer.strategy, ["type"], ["settings"]);
+    strategyType = oneOf(
+      strategy.type,
+      new Set(["random", "roundRobin", "leastPing", "leastLoad"]),
+    );
+    if (strategyType === "leastLoad") {
+      if (Object.hasOwn(strategy, "settings")) object(strategy.settings);
+    } else if (Object.hasOwn(strategy, "settings")) {
+      return fail();
+    }
+  }
+
+  return {
+    observational: strategyType === "leastPing" || strategyType === "leastLoad",
+    prefixes,
+    tag,
+  };
+};
+
+const reserveMatchChecks = (
+  budget: AggregateMatchBudget,
+  proxyCount: number,
+  prefixCount: number,
+): void => {
+  if (
+    prefixCount >
+    Math.floor((MAX_AGGREGATE_MATCH_CHECKS - budget.used) / proxyCount)
+  ) {
+    return fail();
+  }
+  budget.used += proxyCount * prefixCount;
+};
+
+const accumulateBalancerCoverage = (
+  prefixes: readonly string[],
+  proxyTags: readonly string[],
+  covered: Set<string>,
+): void => {
+  const matchedPrefixes = prefixes.map(() => false);
+  let selectedCount = 0;
+  for (const proxyTag of proxyTags) {
+    let selected = false;
+    for (const [index, prefix] of prefixes.entries()) {
+      if (!proxyTag.startsWith(prefix)) continue;
+      matchedPrefixes[index] = true;
+      selected = true;
+    }
+    if (selected) {
+      selectedCount += 1;
+      covered.add(proxyTag);
+    }
+  }
+  if (selectedCount < 2 || matchedPrefixes.some((matched) => !matched)) {
+    return fail();
+  }
+};
+
+const validateObservatory = (
+  value: unknown,
+  proxyTags: readonly string[],
+  burst: boolean,
+  matchBudget: AggregateMatchBudget,
+): void => {
+  const observatory = object(value);
+  if (!Object.hasOwn(observatory, "subjectSelector")) return fail();
+  const prefixes = selectors(observatory.subjectSelector);
+  if (burst) {
+    if (!Object.hasOwn(observatory, "pingConfig")) return fail();
+    object(observatory.pingConfig);
+  }
+  reserveMatchChecks(matchBudget, proxyTags.length, prefixes.length);
+  for (const prefix of prefixes) {
+    if (!proxyTags.some((tag) => tag.startsWith(prefix))) return fail();
+  }
+};
+
+const isIgnoredAggregate = (
+  profile: JsonObject,
+  outbounds: readonly JsonObject[],
+  proxies: readonly JsonObject[],
+  matchBudget: AggregateMatchBudget,
+): boolean => {
+  if (proxies.length < 2) return false;
+
+  const proxyTags = proxies.map((proxy) => identityString(proxy.tag, 256));
+  if (new Set(proxyTags).size !== proxyTags.length) return fail();
+  for (const proxy of proxies) validateConvertibleProxy(proxy);
+
+  const knownOutboundTags = new Set(proxyTags);
+  for (const outbound of outbounds) {
+    if (!SUPPORTED_PROTOCOLS.has(string(outbound.protocol)) && Object.hasOwn(outbound, "tag")) {
+      const tag = identityString(outbound.tag, 256);
+      if (knownOutboundTags.has(tag)) return fail();
+      knownOutboundTags.add(tag);
+    }
+  }
+
+  const routing = object(profile.routing);
+  const rawBalancers = array(routing.balancers);
+  if (rawBalancers.length === 0) return fail();
+  const knownBalancerTags = new Set<string>();
+  const covered = new Set<string>();
+  let hasObservationalStrategy = false;
+  for (const rawBalancer of rawBalancers) {
+    const balancer = parseAggregateBalancer(
+      rawBalancer,
+      knownOutboundTags,
+    );
+    if (knownBalancerTags.has(balancer.tag)) return fail();
+    knownBalancerTags.add(balancer.tag);
+    hasObservationalStrategy ||= balancer.observational;
+    reserveMatchChecks(matchBudget, proxyTags.length, balancer.prefixes.length);
+    accumulateBalancerCoverage(balancer.prefixes, proxyTags, covered);
+  }
+  if (covered.size !== proxyTags.length) return fail();
+
+  const referencedBalancerTags = new Set<string>();
+  for (const rawRule of array(routing.rules)) {
+    const rule = object(rawRule);
+    if (Object.hasOwn(rule, "outboundTag")) {
+      identityString(rule.outboundTag, 256);
+      continue;
+    }
+    if (!Object.hasOwn(rule, "balancerTag")) return fail();
+    const balancerTag = identityString(rule.balancerTag, 256);
+    if (!knownBalancerTags.has(balancerTag)) return fail();
+    referencedBalancerTags.add(balancerTag);
+  }
+  if (referencedBalancerTags.size !== knownBalancerTags.size) return fail();
+
+  const hasObservatory = Object.hasOwn(profile, "observatory");
+  const hasBurstObservatory = Object.hasOwn(profile, "burstObservatory");
+  if (hasObservatory && hasBurstObservatory) return fail();
+  if (hasObservationalStrategy && !hasObservatory && !hasBurstObservatory) {
+    return fail();
+  }
+  if (hasObservatory || hasBurstObservatory) {
+    validateObservatory(
+      hasObservatory ? profile.observatory : profile.burstObservatory,
+      proxyTags,
+      hasBurstObservatory,
+      matchBudget,
+    );
+  }
+  return true;
+};
+
+const classifyProfile = (
+  value: unknown,
+  matchBudget: AggregateMatchBudget,
+): ClassifiedProfile | undefined => {
+  const profile = object(value);
+  if (!Object.hasOwn(profile, "remarks") || !Object.hasOwn(profile, "outbounds")) {
+    return fail();
+  }
+  const baseName = remarks(profile.remarks);
+  const outbounds = array(profile.outbounds).map(object);
+  const proxies: JsonObject[] = [];
+
+  for (const outbound of outbounds) {
+    const protocol = string(outbound.protocol);
+    if (!AUXILIARY_PROTOCOLS.has(protocol)) {
+      proxies.push(proxyShell(outbound));
+    }
+  }
+
+  if (proxies.length === 1) {
+    const outbound = proxies[0] ?? fail();
+    if (!SUPPORTED_PROTOCOLS.has(string(outbound.protocol))) return fail();
+    return { baseName, outbound };
+  }
+  if (isIgnoredAggregate(profile, outbounds, proxies, matchBudget)) {
+    return undefined;
+  }
+  return fail();
+};
+
 const assignNames = (baseNames: readonly string[]): string[] => {
   const prescanned = new Set(baseNames);
   const emitted = new Set<string>();
@@ -426,8 +592,9 @@ export interface MihomoConfig {
 export const convertHappJson = (value: unknown): MihomoConfig => {
   const profiles = array(value);
   if (profiles.length === 0) return fail();
+  const matchBudget: AggregateMatchBudget = { used: 0 };
   const standalone = profiles
-    .map(classifyProfile)
+    .map((profile) => classifyProfile(profile, matchBudget))
     .filter((profile): profile is ClassifiedProfile => profile !== undefined);
   if (standalone.length === 0) return fail();
 

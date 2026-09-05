@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { gunzipSync } from "node:zlib";
+import { parse } from "yaml";
 
 import { readConfig } from "../dist/src/config.js";
 import { convertHappText } from "../dist/src/converter.js";
@@ -55,14 +56,30 @@ if (args[0] === "--live") {
   );
   yaml = convertHappText(result.body);
 } else {
+  const reality = vlessReality("Synthetic Reality");
+  reality.outbounds[0].streamSettings.realitySettings.fingerprint = "360";
+  const tcpTls = vlessTcpTls("Synthetic TCP TLS");
+  tcpTls.outbounds[0].streamSettings.tlsSettings.fingerprint = "360";
+  const wsTls = vlessWsTls("Synthetic WS TLS");
+  wsTls.outbounds[0].streamSettings.tlsSettings.fingerprint = "360";
   yaml = convertHappText(
     JSON.stringify([
-      vlessReality("Synthetic Reality"),
-      vlessTcpTls("Synthetic TCP TLS"),
-      vlessWsTls("Synthetic WS TLS"),
+      reality,
+      tcpTls,
+      wsTls,
       hysteria("Synthetic Hysteria 2"),
     ]),
   );
+  const parsed = parse(yaml);
+  const fingerprints = parsed.proxies
+    .filter((proxy) => proxy.type === "vless")
+    .map((proxy) => proxy["client-fingerprint"]);
+  if (
+    fingerprints.length !== 3 ||
+    fingerprints.some((fingerprint) => fingerprint !== "360")
+  ) {
+    throw new Error("Synthetic VLESS fingerprint coverage failed");
+  }
 }
 
 const validationDirectory = mkdtempSync(join(tmpdir(), "happ2mihomo-mihomo-"));

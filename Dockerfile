@@ -22,7 +22,8 @@ FROM mihomo-runner AS mihomo-test
 RUN npm run test:mihomo:local
 
 FROM ${NODE_IMAGE} AS production
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    PORT=17890
 WORKDIR /app
 COPY --from=build --chown=1000:1000 /app/package.json /app/package-lock.json ./
 COPY --from=build --chown=1000:1000 /app/node_modules ./node_modules
