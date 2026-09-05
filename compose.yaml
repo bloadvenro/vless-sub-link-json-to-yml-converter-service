@@ -1,0 +1,31 @@
+name: happ2mihomo
+
+services:
+  happ2mihomo:
+    image: happ2mihomo:local
+    build:
+      context: .
+      target: production
+    environment:
+      SUBSCRIPTION_URL: ${SUBSCRIPTION_URL:?Set SUBSCRIPTION_URL in .env}
+      HAPP_USER_AGENT: ${HAPP_USER_AGENT:-Happ/4.3.0/Android}
+    ports:
+      - "127.0.0.1:17890:17890"
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=1m,uid=1000,gid=1000
+    stop_grace_period: 7s
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:17890/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

@@ -1,0 +1,30 @@
+{
+  "name": "happ2mihomo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.20.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "start": "node dist/src/index.js",
+    "test": "npm run build && NODE_EXTRA_CA_CERTS=test/fixtures/upstream-cert.pem node --test --test-concurrency=1 dist/test/*.test.js",
+    "test:live": "npm run build && node --env-file=.env --test --test-concurrency=1 dist/test/live.test.js",
+    "test:mihomo": "docker build --target mihomo-test .",
+    "test:mihomo:live": "docker build --target mihomo-runner --tag happ2mihomo-mihomo-runner:local . && docker run --rm --env-file .env happ2mihomo-mihomo-runner:local --live",
+    "test:mihomo:local": "node scripts/validate-mihomo.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "eslint": "10.10.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.69.0"
+  }
+}
