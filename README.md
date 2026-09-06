@@ -1,5 +1,7 @@
 # happ2mihomo
 
+English | [Русский](README.ru.md)
+
 `happ2mihomo` is a local, Dockerized adapter that fetches a Happ JSON subscription and exposes a strict Mihomo YAML subscription for Clash Verge Rev.
 
 The service supports VLESS TCP+Reality, VLESS TCP+TLS, VLESS WS+TLS, and Happ Hysteria version 2 profiles. A validated multi-outbound Happ aggregate is recognized and omitted from the generated proxy list. Compose publishes the service only on the host loopback interface.
