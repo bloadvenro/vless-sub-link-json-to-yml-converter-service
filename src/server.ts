@@ -9,6 +9,7 @@ import { once } from "node:events";
 
 import type { RuntimeConfig } from "./config.js";
 import { convertHappText } from "./converter.js";
+import { failureContext } from "./diagnostics.js";
 import { ConversionError, RequestAbortedError, UpstreamError } from "./errors.js";
 import { fetchSubscription, type UpstreamResult } from "./upstream.js";
 
@@ -94,6 +95,9 @@ export const createGateway = (
     }
 
     activeSubscriptions += 1;
+    const started = performance.now();
+    let stage: "upstream" | "conversion" = "upstream";
+    let succeeded = false;
     const controller = new AbortController();
     activeControllers.add(controller);
     const completion = responseCompletion(response);
@@ -112,6 +116,7 @@ export const createGateway = (
     try {
       const upstream = await fetcher(config, controller.signal);
       if (controller.signal.aborted || !responseCanBeWritten(response)) return;
+      stage = "conversion";
       const yaml = convertHappText(upstream.body);
       if (!responseCanBeWritten(response)) return;
       writeBody(
@@ -121,6 +126,7 @@ export const createGateway = (
         yaml,
         upstream.headers,
       );
+      succeeded = true;
     } catch (error) {
       if (
         error instanceof RequestAbortedError ||
@@ -129,6 +135,14 @@ export const createGateway = (
       ) {
         return;
       }
+      const status = error instanceof UpstreamError
+        ? error.kind === "timeout" ? 504 : 502
+        : error instanceof ConversionError ? 502 : 500;
+      console.error(JSON.stringify({
+        event: "subscription_error", stage, status,
+        elapsed_ms: Math.round(performance.now() - started),
+        ...failureContext(error),
+      }));
       if (error instanceof UpstreamError) {
         writeError(
           response,
@@ -138,12 +152,17 @@ export const createGateway = (
       } else if (error instanceof ConversionError) {
         writeError(response, 502, "Bad Gateway");
       } else {
-        console.error("Request failed: unexpected");
         writeError(response, 500, "Internal Server Error");
       }
     } finally {
       try {
         await completion;
+        if (succeeded && response.writableFinished && !controller.signal.aborted) {
+          console.log(JSON.stringify({
+            event: "subscription_ok", status: 200,
+            elapsed_ms: Math.round(performance.now() - started),
+          }));
+        }
       } finally {
         clearTimeout(responseDeadline);
         request.off("aborted", abortForDisconnect);

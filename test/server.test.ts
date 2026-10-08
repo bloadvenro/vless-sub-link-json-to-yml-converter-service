@@ -173,7 +173,13 @@ test("maps all failures to static bodies and emits no partial YAML", async () =>
   } finally {
     console.error = originalError;
   }
-  assert.deepEqual(logs, ["Request failed: unexpected"]);
+  assert.equal(logs.length, cases.length);
+  const records = logs.map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.deepEqual(records.map((record) => record.reason), [
+    "unknown", "timeout", "invalid-json", "schema-validation", "unexpected",
+  ]);
+  assert.deepEqual(records.map((record) => record.status), [502, 504, 502, 502, 500]);
+  assert.ok(records.every((record) => record.event === "subscription_error"));
   assert.equal(logs.join("\n").includes("synthetic-secret-marker"), false);
 });
 
@@ -234,7 +240,9 @@ test("response deadline aborts stalled work and releases its subscription slot",
   }
 });
 
-test("client disconnect aborts upstream and writes no response bytes", async () => {
+test("client disconnect aborts upstream and writes no response bytes or success logs", async (t) => {
+  const logs: string[] = [];
+  t.mock.method(console, "log", (...values: unknown[]) => logs.push(values.join(" ")));
   let started = false;
   let aborted = false;
   const { gateway, port } = await start({
@@ -266,6 +274,7 @@ test("client disconnect aborts upstream and writes no response bytes", async () 
     request.destroy();
     await eventually(() => aborted && gateway.activeSubscriptions() === 0);
     assert.equal(responseBytes, 0);
+    assert.deepEqual(logs, []);
   } finally {
     await gateway.drain();
   }

@@ -629,15 +629,19 @@ export const convertHappJson = (value: unknown): MihomoConfig => {
 };
 
 export const convertHappText = (body: Uint8Array | string): string => {
+  let text: string;
+  try {
+    text = typeof body === "string"
+      ? body
+      : new TextDecoder("utf-8", { fatal: true }).decode(body);
+  } catch {
+    throw new ConversionError("invalid-utf8");
+  }
   let parsed: unknown;
   try {
-    const text =
-      typeof body === "string"
-        ? body
-        : new TextDecoder("utf-8", { fatal: true }).decode(body);
     parsed = JSON.parse(text);
   } catch {
-    throw new ConversionError();
+    throw new ConversionError("invalid-json");
   }
   return stringify(convertHappJson(parsed), { lineWidth: 0 });
 };

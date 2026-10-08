@@ -30,6 +30,7 @@ const main = (): void => {
       return;
     }
     console.log(`happ2mihomo listening on ${HOST}:${address.port}`);
+    console.log('{"event":"diagnostics_enabled","version":1}');
   });
 
   const stop = (): void => {

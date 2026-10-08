@@ -174,6 +174,7 @@ test("SIGTERM performs a normal drain and exits 0 without logging the URL", asyn
   const output = collect(child);
   try {
     await waitForOutput(child, output, "happ2mihomo listening");
+    await waitForOutput(child, output, '{"event":"diagnostics_enabled","version":1}');
     const match = /happ2mihomo listening on 0\.0\.0\.0:([1-9]\d*)/u.exec(
       output.stdout.join(""),
     );

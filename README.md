@@ -97,6 +97,34 @@ docker compose ps --all
 docker compose logs --tail=100 happ2mihomo
 ```
 
+### Diagnose a subscription error
+
+Diagnostics are enabled automatically in ordinary container logs; no `.env` changes are needed.
+From the project directory with your existing `.env`, run each command in order:
+
+```sh
+git switch main
+git pull --ff-only origin main
+docker compose up -d --build --force-recreate --wait --wait-timeout 60
+curl --silent --show-error --output /dev/null --write-out 'HTTP %{http_code}\n' http://127.0.0.1:17890/sub
+docker compose logs --since=5m --tail=100 happ2mihomo
+```
+
+Replace `17890` if your `HOST_PORT` differs. Look for `{"event":"diagnostics_enabled","version":1}`
+at startup, then a `subscription_error` or `subscription_ok` record after requesting `/sub`.
+For example, a provider rejection produces:
+
+```json
+{"event":"subscription_error","stage":"upstream","status":502,"elapsed_ms":123,"reason":"http-status","upstream_status":403,"redirects":0}
+```
+
+`stage=upstream` identifies fetching failures. `reason` distinguishes an HTTP status, invalid/missing/too many redirects,
+body-size limits, network failures, body-read failures, and timeouts. A whitelisted `network_code` can identify DNS,
+connection, or certificate failures. `stage=conversion` distinguishes `invalid-json`, `invalid-utf8`, and
+`schema-validation`; schema errors may include `validation_issue`, a known local `conversion_function`, and its
+compiled `conversion_line`. Share these diagnostic records to investigate a persistent 502. If no record appears
+after the request, check that the client uses this container's port. `/healthz` does not produce subscription records.
+
 Lifecycle commands have different effects:
 
 ```sh
@@ -149,7 +177,7 @@ Operational limits are fixed: at most 4 active `/sub` requests, a 20-second upst
 - `.env` is ignored by Git. Keep the subscription URL secret and do not paste it into logs, issues, fixtures, or committed files.
 - Redirects remain HTTPS and may not contain credentials or fragments.
 - Inbound client headers are never forwarded. Only the configured user agent, JSON accept header, and identity encoding request are application-supplied upstream.
-- Errors and logs do not contain the upstream URL, response body, header values, redirect locations, or nested causes.
+- Errors and logs do not contain the upstream URL, response body, header values, redirect locations, raw stacks, or raw nested causes. Diagnostics contain only fixed reasons, bounded numeric context, whitelisted network codes, and known local conversion locations; incoming field names and values are never logged.
 - The production container runs as UID/GID `1000:1000`, with a read-only root filesystem, a small temporary filesystem, and no-new-privileges.
 
 ## Development and tests

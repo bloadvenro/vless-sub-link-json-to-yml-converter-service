@@ -1,11 +1,11 @@
-import { ConversionError } from "./errors.js";
+import { ConversionError, type ValidationIssue } from "./errors.js";
 
 export type JsonObject = Record<string, unknown>;
 
 const controlCharacter = /\p{Cc}/u;
 
-export const fail = (): never => {
-  throw new ConversionError();
+export const fail = (issue?: ValidationIssue): never => {
+  throw new ConversionError("schema-validation", issue);
 };
 
 export const object = (value: unknown): JsonObject => {
@@ -22,12 +22,8 @@ export const exactObject = (
 ): JsonObject => {
   const result = object(value);
   const allowed = new Set([...required, ...optional]);
-  if (
-    required.some((key) => !Object.hasOwn(result, key)) ||
-    Object.keys(result).some((key) => !allowed.has(key))
-  ) {
-    return fail();
-  }
+  if (required.some((key) => !Object.hasOwn(result, key))) return fail("missing-fields");
+  if (Object.keys(result).some((key) => !allowed.has(key))) return fail("unknown-fields");
   return result;
 };
 

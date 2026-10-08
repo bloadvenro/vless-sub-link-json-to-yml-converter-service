@@ -1,7 +1,7 @@
 import { validateHeaderValue } from "node:http";
 
 import { validateRedirectUrl } from "./config.js";
-import { RequestAbortedError, UpstreamError } from "./errors.js";
+import { RequestAbortedError, safeNetworkCode, UpstreamError } from "./errors.js";
 
 const MAX_BODY_BYTES = 5 * 1_024 * 1_024;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -42,7 +42,7 @@ const readBody = async (
   ) {
     await cancelBody(response);
     controller.abort();
-    throw new UpstreamError("bad-gateway");
+    throw new UpstreamError("bad-gateway", { reason: "body-too-large" });
   }
 
   if (response.body === null) return new Uint8Array();
@@ -56,8 +56,12 @@ const readBody = async (
       total += item.value.byteLength;
       if (total > MAX_BODY_BYTES) {
         controller.abort();
-        await reader.cancel();
-        throw new UpstreamError("bad-gateway");
+        try {
+          await reader.cancel();
+        } catch {
+          // Cancellation must not hide the size-limit diagnostic.
+        }
+        throw new UpstreamError("bad-gateway", { reason: "body-too-large" });
       }
       chunks.push(item.value);
     }
@@ -119,29 +123,39 @@ export const fetchSubscription = async (
           },
           signal: controller.signal,
         });
-      } catch {
+      } catch (error) {
         if (requestSignal.aborted) throw new RequestAbortedError();
         if (controller.signal.reason === timeoutReason) {
-          throw new UpstreamError("timeout");
+          throw new UpstreamError("timeout", { reason: "timeout", redirects: redirectCount });
         }
-        throw new UpstreamError("bad-gateway");
+        const networkCode = safeNetworkCode(error);
+        throw new UpstreamError("bad-gateway", {
+          reason: "fetch-network", redirects: redirectCount,
+          ...(networkCode === undefined ? {} : { networkCode }),
+        });
       }
 
       if (REDIRECT_STATUSES.has(response.status)) {
         if (redirectCount >= 3) {
           await cancelBody(response);
-          throw new UpstreamError("bad-gateway");
+          throw new UpstreamError("bad-gateway", {
+            reason: "redirect-limit", upstreamStatus: response.status, redirects: redirectCount,
+          });
         }
         const location = response.headers.get("location");
         if (location === null) {
           await cancelBody(response);
-          throw new UpstreamError("bad-gateway");
+          throw new UpstreamError("bad-gateway", {
+            reason: "redirect-missing", upstreamStatus: response.status, redirects: redirectCount,
+          });
         }
         try {
           currentUrl = validateRedirectUrl(location, currentUrl);
         } catch {
           await cancelBody(response);
-          throw new UpstreamError("bad-gateway");
+          throw new UpstreamError("bad-gateway", {
+            reason: "redirect-invalid", upstreamStatus: response.status, redirects: redirectCount,
+          });
         }
         await cancelBody(response);
         redirectCount += 1;
@@ -150,7 +164,9 @@ export const fetchSubscription = async (
 
       if (response.status !== 200) {
         await cancelBody(response);
-        throw new UpstreamError("bad-gateway");
+        throw new UpstreamError("bad-gateway", {
+          reason: "http-status", upstreamStatus: response.status, redirects: redirectCount,
+        });
       }
 
       try {
@@ -161,10 +177,17 @@ export const fetchSubscription = async (
       } catch (error) {
         if (requestSignal.aborted) throw new RequestAbortedError();
         if (controller.signal.reason === timeoutReason) {
-          throw new UpstreamError("timeout");
+          throw new UpstreamError("timeout", {
+            reason: "timeout", upstreamStatus: response.status, redirects: redirectCount,
+          });
         }
-        if (error instanceof UpstreamError) throw error;
-        throw new UpstreamError("bad-gateway");
+        const networkCode = safeNetworkCode(error);
+        throw new UpstreamError("bad-gateway", {
+          reason: error instanceof UpstreamError ? error.diagnostics?.reason ?? "body-read" : "body-read",
+          upstreamStatus: response.status,
+          redirects: redirectCount,
+          ...(networkCode === undefined ? {} : { networkCode }),
+        });
       }
     }
   } finally {
