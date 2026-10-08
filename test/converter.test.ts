@@ -101,6 +101,110 @@ test("converts WS TLS VLESS while preserving semantic strings", () => {
   ]);
 });
 
+test("validates and ignores the optional TLS session-resumption hint", () => {
+  for (const fixture of [vlessTcpTls, vlessWsTls, hysteria]) {
+    for (const value of [false, true]) {
+      const profile = fixture();
+      (streamSettings(profile).tlsSettings as Record<string, unknown>)
+        .enableSessionResumption = value;
+      assert.deepEqual(convertHappJson([profile]), convertHappJson([fixture()]));
+    }
+  }
+});
+
+test("rejects non-boolean TLS session-resumption hints", () => {
+  for (const fixture of [vlessTcpTls, vlessWsTls, hysteria]) {
+    for (const value of [undefined, null, 0, 1, "false", "true", [], {}]) {
+      const profile = fixture();
+      (streamSettings(profile).tlsSettings as Record<string, unknown>)
+        .enableSessionResumption = value;
+      assert.throws(() => convertHappJson([vlessTcpTls(), profile]), ConversionError);
+    }
+  }
+});
+
+test("maps explicit WS host to one canonical Host header with priority over headers", () => {
+  for (const headers of [
+    {},
+    { Host: "old.example.test", host: "lower.example.test", HoSt: "mixed.example.test" },
+  ]) {
+    const profile = vlessWsTls();
+    const ws = streamSettings(profile).wsSettings as Record<string, unknown>;
+    ws.host = "front.example.test:8443";
+    ws.headers = { ...headers, "X-Synthetic": "  preserved value  " };
+    const proxy = convertHappJson([profile]).proxies[0];
+    assert.ok(proxy !== undefined);
+    const options = proxy["ws-opts"] as { path: string; headers: Record<string, string> };
+    assert.equal(options.path, "/socket?ed=2048");
+    assert.equal(Object.getPrototypeOf(options.headers), null);
+    assert.deepEqual(Object.entries(options.headers), [
+      ["X-Synthetic", "  preserved value  "],
+      ["Host", "front.example.test:8443"],
+    ]);
+  }
+});
+
+test("keeps legacy WS headers when optional host is absent or empty", () => {
+  for (const headers of [{}, { host: "legacy.example.test", "X-Synthetic": "value" }]) {
+    const legacy = vlessWsTls();
+    (streamSettings(legacy).wsSettings as Record<string, unknown>).headers = headers;
+    const withEmptyHost = clone(legacy);
+    (streamSettings(withEmptyHost).wsSettings as Record<string, unknown>).host = "";
+    assert.deepEqual(convertHappJson([withEmptyHost]), convertHappJson([legacy]));
+  }
+});
+
+test("validates optional WS host type, controls, and UTF-8 byte limits", () => {
+  const boundary = vlessWsTls();
+  (streamSettings(boundary).wsSettings as Record<string, unknown>).host = "é".repeat(2_048);
+  const proxy = convertHappJson([boundary]).proxies[0];
+  assert.ok(proxy !== undefined);
+  const options = proxy["ws-opts"] as { headers: Record<string, string> };
+  assert.equal(options.headers.Host, "é".repeat(2_048));
+
+  for (const value of [undefined, null, false, 0, [], {}, "host\r\nInjected: value", "host\u0000", "host\u0085", "x".repeat(4_097), "é".repeat(2_049)]) {
+    const profile = vlessWsTls();
+    (streamSettings(profile).wsSettings as Record<string, unknown>).host = value;
+    assert.throws(() => convertHappJson([vlessTcpTls(), profile]), ConversionError);
+  }
+
+  const invalidHeader = vlessWsTls();
+  const ws = streamSettings(invalidHeader).wsSettings as Record<string, unknown>;
+  ws.host = "front.example.test";
+  ws.headers = { host: "invalid\r\nvalue" };
+  assert.throws(() => convertHappJson([invalidHeader]), ConversionError);
+  ws.headers = {};
+  ws.unknown = true;
+  assert.throws(() => convertHappJson([invalidHeader]), ConversionError);
+});
+
+test("validates new TLS and WS fields inside recognized aggregates", () => {
+  const profile = aggregate();
+  const outbounds = profile.outbounds as Array<Record<string, unknown>>;
+  const hy = clone(firstOutbound(hysteria()));
+  hy.tag = "proxy-four";
+  outbounds.push(hy);
+  for (const outbound of outbounds) {
+    if (outbound.protocol !== "vless" && outbound.protocol !== "hysteria") continue;
+    const stream = outbound.streamSettings as Record<string, unknown>;
+    if (stream.security === "tls") {
+      (stream.tlsSettings as Record<string, unknown>).enableSessionResumption = false;
+    }
+    if (stream.network === "ws") {
+      (stream.wsSettings as Record<string, unknown>).host = "front.example.test";
+    }
+  }
+  assert.deepEqual(
+    convertHappJson([profile, vlessTcpTls()]),
+    convertHappJson([vlessTcpTls()]),
+  );
+  (hy.streamSettings as Record<string, unknown>).tlsSettings = {
+    ...(hy.streamSettings as Record<string, unknown>).tlsSettings as Record<string, unknown>,
+    enableSessionResumption: "false",
+  };
+  assert.throws(() => convertHappJson([profile, vlessTcpTls()]), ConversionError);
+});
+
 test("accepts the 360 client fingerprint for every supported VLESS transport", () => {
   for (const fixture of [vlessReality, vlessTcpTls, vlessWsTls]) {
     const profile = fixture();

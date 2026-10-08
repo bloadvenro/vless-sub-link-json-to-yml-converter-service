@@ -91,7 +91,15 @@ interface TlsSettings {
 }
 
 const parseTlsSettings = (value: unknown): TlsSettings => {
-  const settings = exactObject(value, ["alpn", "fingerprint", "serverName"]);
+  const settings = exactObject(
+    value,
+    ["alpn", "fingerprint", "serverName"],
+    ["enableSessionResumption"],
+  );
+  // Xray's session-resumption hint has no corresponding Mihomo proxy option.
+  if (Object.hasOwn(settings, "enableSessionResumption")) {
+    boolean(settings.enableSessionResumption);
+  }
   return {
     alpn: parseAlpn(settings.alpn),
     fingerprint: oneOf(settings.fingerprint, FINGERPRINTS),
@@ -159,14 +167,20 @@ const parseVlessSettings = (value: unknown): VlessSettings => {
 const parseWsSettings = (
   value: unknown,
 ): { path: string; headers: Record<string, string> } => {
-  const settings = exactObject(value, ["path", "headers"]);
+  const settings = exactObject(value, ["path", "headers"], ["host"]);
+  const host = Object.hasOwn(settings, "host")
+    ? controlFreeString(settings.host, 0, 4_096)
+    : "";
   const sourceHeaders = object(settings.headers);
   const headers: Record<string, string> = {};
   Object.setPrototypeOf(headers, null);
   for (const [name, rawValue] of Object.entries(sourceHeaders)) {
     controlFreeString(name, 1, 4_096);
-    headers[name] = controlFreeString(rawValue, 0, 4_096);
+    const headerValue = controlFreeString(rawValue, 0, 4_096);
+    if (host === "" || name.toLowerCase() !== "host") headers[name] = headerValue;
   }
+  // Xray gives a non-empty wsSettings.host priority over its Host header.
+  if (host !== "") headers.Host = host;
   return {
     path: controlFreeString(settings.path, 1, 4_096),
     headers,

@@ -139,6 +139,8 @@ A recognized aggregate has non-empty valid `remarks` and all of these properties
 
 Harmless aggregate-level client sections that are not consumed by the converter are allowed only after the aggregate structure validates. Supported standalone profiles remain strictly validated at every consumed layer.
 
+The optional boolean [`tlsSettings.enableSessionResumption`](https://xtls.github.io/en/config/transports/tls.html) is validated and ignored: this Xray handshake optimization has no corresponding Mihomo proxy option. The optional string [`wsSettings.host`](https://github.com/XTLS/XTLS.github.io/blob/gh-pages-next/config/transports/websocket.md) becomes `ws-opts.headers.Host` when non-empty, overriding any case variant of a `Host` header. An omitted or empty `host` preserves the existing headers. Unknown TLS and WS fields still reject the subscription.
+
 Operational limits are fixed: at most 4 active `/sub` requests, a 20-second upstream timeout, at most 3 HTTPS redirects, a 5 MiB decoded response-body limit, and at most 100,000 aggregate tag-prefix comparisons across the complete subscription/request. The 30-second response deadline is an event-loop timer: it aborts asynchronous work but cannot preempt synchronous JSON conversion. Conversion work is instead constrained by the 5 MiB input limit and the request-wide 100,000-comparison aggregate limit.
 
 ## Security behavior
